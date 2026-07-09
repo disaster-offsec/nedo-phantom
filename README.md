@@ -1,3 +1,4 @@
+```
 nedo-phantom/
 ├── cmd/
 │   ├── agent/          # точка входа для агента (Linux)
@@ -17,3 +18,4 @@ nedo-phantom/
 ├── configs/            # примеры конфигов (agent.yaml, c2.yaml)
 ├── build/              # скрипты сборки (Makefile)
 └── go.mod
+```
