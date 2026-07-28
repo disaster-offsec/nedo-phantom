@@ -1,6 +1,8 @@
 package crypto
 
 import (
+		"crypto/aes"
+    "crypto/cipher"
     "crypto/rand"
     "crypto/rsa"
     "crypto/sha256"
@@ -10,9 +12,80 @@ import (
 )
 
 type ServerCrypto struct {
-    // У сервера нет своей RSA пары (он не расшифровывает)
-    // Вместо этого он хранит публичные ключи агентов
-    // и генерирует AES ключи для каждого агента
+		symmetricKey []byte
+}
+
+func NewServerCryptoFromKey(key []byte) *ServerCrypto {
+		return &ServerCrypto{
+				symmetricKey: key,
+		}
+}
+
+// Decrypt расшифровывает данные через AES-GCM
+func (c *ServerCrypto) Decrypt(data []byte) ([]byte, error) {
+		// TODO: Реализовать AES-GCM расшифровку
+    // 1. Проверить что ключ установлен
+		if c.symmetricKey == nil {
+				return nil, fmt.Errorf("symmetricKey is nil")
+		}
+    // 2. Создать AES cipher
+		block, err := aes.NewCipher(c.symmetricKey)
+		if err != nil {
+				return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+		}
+
+    // 3. Создать GCM
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+				return nil, fmt.Errorf("failed to create GCM %w", err)
+		}
+
+    // 4. Извлечь nonce и ciphertext
+		nonceSize := gcm.NonceSize()
+		if len(data) < nonceSize {
+				return nil, fmt.Errorf("ciphertext too short")
+		}
+
+		nonce := data[:nonceSize]
+		ciphertext := data[nonceSize:]
+
+    // 5. Расшифровать
+		plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+		if err != nil {
+				return nil, fmt.Errorf("failed to decrypt: %w", err)
+		}
+
+    return plaintext, nil
+}
+
+// Encrypt шифрует данные через AES-GCM (для ответов агенту)
+func (c *ServerCrypto) Encrypt(data []byte) ([]byte, error) {
+    // 1. Проверить что ключ установлен
+    if c.symmetricKey == nil {
+        return nil, fmt.Errorf("symmetric key not set")
+    }
+    
+    // 2. Создать AES cipher
+    block, err := aes.NewCipher(c.symmetricKey)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+    }
+    
+    // 3. Создать GCM
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create GCM: %w", err)
+    }
+    
+    // 4. Сгенерировать nonce
+    nonce := make([]byte, gcm.NonceSize())
+    if _, err := rand.Read(nonce); err != nil {
+        return nil, fmt.Errorf("failed to generate nonce: %w", err)
+    }
+    
+    // 5. Зашифровать (nonce добавляется в начало)
+    ciphertext := gcm.Seal(nonce, nonce, data, nil)
+    return ciphertext, nil
 }
 
 // GenerateSymmetricKey генерирует новый AES-256 ключ

