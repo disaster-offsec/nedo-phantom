@@ -6,8 +6,8 @@ import (
 )
 
 type TaskQueue struct {
-    mu    sync.Mutex
-    tasks []common.Task
+    mu      sync.Mutex
+    tasks   []common.Task
     pending map[string]common.Task
 }
 
@@ -28,7 +28,7 @@ func (q *TaskQueue) AddTask(task common.Task) {
 func (q *TaskQueue) GetNextTask() *common.Task {
     q.mu.Lock()
     defer q.mu.Unlock()
-    
+
     for i, task := range q.tasks {
         if task.Status == "pending" {
             task.Status = "running"
@@ -37,4 +37,10 @@ func (q *TaskQueue) GetNextTask() *common.Task {
         }
     }
     return nil
+}
+
+func (q *TaskQueue) GetTasks() []common.Task {
+    q.mu.Lock()
+    defer q.mu.Unlock()
+    return q.tasks
 }

