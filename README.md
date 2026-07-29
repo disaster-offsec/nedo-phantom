@@ -50,7 +50,8 @@ nedo-phantom/
 │   ├── secure_conn.go          # Обёртка с шифрованием
 │   └── terminal.go             # Общие терминальные утилиты
 ├── README.md
-└── .gitignore```
+└── .gitignore
+```
 
 ---
 
