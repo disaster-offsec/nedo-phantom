@@ -9,48 +9,48 @@
 ```
 nedo-phantom/
 ├── bin/
-│   ├── agent-linux
-│   └── c2-server
-├── cmd/
-│   ├── agent/
-│   │   └── main.go
-│   └── c2/
-│       └── main.go
-├── configs/
-├── internal/
-│   ├── agent/
-│   │   ├── core/
-│   │   │   ├── agent.go
-│   │   │   └── shell.go
-│   │   ├── crypto/
-│   │   │   └── crypto.go
-│   │   ├── modules/
-│   │   │   ├── executor.go
-│   │   │   ├── info.go
-│   │   │   └── module.go
-│   │   └── tasks/
-│   │       └── tasks.go
-│   ├── c2/
-│   │   ├── cli/
-│   │   │   └── command.go
-│   │   ├── core/
-│   │   │   ├── server.go
-│   │   │   └── session.go
-│   │   ├── crypto/
-│   │   │   └── crypto.go
-│   │   ├── db/
-│   │   │   └── tasks.go
-│   │   ├── handler/
-│   │   │   └── message.go
-│   │   └── terminal/
-│   │       └── terminal.go
-│   └── common/
-│       ├── cipher.go
-│       ├── protocol.go
-│       └── secure_conn.go
-├── go.mod
-└── README.md
-```
+│ ├── agent-linux               # Собранный бинарник агента для Linux
+│ └── c2-server                 # Собранный бинарник C2 сервера
+├── cmd/                        # Точки входа
+│ ├── agent/
+│ │ └── main.go                 # Точка входа агента
+│ └── c2/
+│   └── main.go                 # Точка входа C2 сервера
+├── go.mod                      # Управление зависимостями
+├── internal/                   # Внутренние пакеты (не экспортируются)
+│ ├── agent/                    # Логика агента
+│ │ ├── core/                   # Ядро агента
+│ │ │ ├── agent.go              # Управление подключением, обмен ключами
+│ │ │ └── shell.go              # Интерактивный шелл (PTY/pipes)
+│ │ ├── crypto/                 # Криптография агента
+│ │ │ └── crypto.go             # RSA + AES-GCM (реализует Cipher)
+│ │ ├── modules/                # Модули для выполнения задач
+│ │ │ ├── executor.go           # Выполнение команд (exec)
+│ │ │ ├── info.go               # Сбор информации о системе (info)
+│ │ │ └── module.go             # Интерфейс Module и ModuleManager
+│ │ └── tasks/                  # Система задач агента
+│ │   └── tasks.go              # Цикл опроса и выполнения задач
+│ ├── c2/                       # Логика C2 сервера
+│ │ ├── cli/                    # CLI интерфейс сервера
+│ │ │ └── command.go            # Команды: /help, /tasks, /add, /exit
+│ │ ├── core/                   # Ядро сервера
+│ │ │ ├── server.go             # Приём агентов, управление сессиями
+│ │ │ └── session.go            # Сессия агента (состояние, ключи)
+│ │ ├── crypto/                 # Криптография сервера
+│ │ │ └── crypto.go             # Генерация и шифрование AES ключей
+│ │ ├── db/                     # Очередь задач
+│ │ │ └── tasks.go              # TaskQueue с потокобезопасностью
+│ │ ├── handler/                # Обработка сообщений от агента
+│ │ │ └── message.go            # Парсинг JSON, маршрутизация
+│ │ └── terminal/               # Управление терминалом сервера
+│ │   └── terminal.go           # Raw-режим, восстановление
+│ └── common/                   # Общие структуры и утилиты
+│   ├── cipher.go               # Интерфейс Cipher (Encrypt/Decrypt)
+│   ├── protocol.go             # Структуры Message, Task, TaskResult
+│   ├── secure_conn.go          # Обёртка с шифрованием
+│   └── terminal.go             # Общие терминальные утилиты
+├── README.md
+└── .gitignore```
 
 ---
 
